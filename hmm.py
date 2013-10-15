@@ -239,7 +239,7 @@ def viterbi(A,B,Pi,O):
         delta=delta_new
 
     (states[T-1],_)=_max(delta)
-    for t in range(T-2,0,-1):
+    for t in range(T-2,-1,-1):
         states[t]=psy[t+1][states[t+1]]
 
     return states

@@ -10,49 +10,36 @@ def isSpace(word):
     return True if w_space_pattern.match(word) else False
 def removeSpace(line):
     return l_space_pattern.sub('',line)
+def getWordMap(dict_file):
+    '''build word map from dict file:first line should be <\s> 0 '''
+    tmp=[l.decode('utf8').strip().split()for l in dict_file]
+    wordmap=dict([(l[0],int(l[1])) for l in tmp if len(l)==2])
+    return wordmap
 
-def getTrainSeqs(train_file):
+def getTrainSeqs(train_file,wordmap):
     '''get word dict and  observation sequence and tag sequence from training set'''
 
     print getTrainSeqs.__doc__
 
-    print 'read training set and build word dict with no space...'
-    lines=[l.decode('utf8').strip() for l in train_file]
-    wordset=set()
-    wordmap={}
-    tags=[]
-
-    for line in lines:
-        for w in removeSpace(line):
-            wordset.add(w)
-
-    i=0
-
-    for w in wordset:
-        wordmap[w]=i
-        i=i+1
-
-    print 'training set have %d lines and %d distinct words'%(len(lines),i)
+    
     print 'begin to get observation sequence and tag sequence of training set...'
-    tick=0.05
-    current=0
-    total=len(lines)
     nprocessed=0
-
-    seqs=[]
-    tseqs=[]
-    for line in lines:
+    unknown_id = len(wordmap)
+    for line in train_file:
+        line=line.decode('utf8').strip()
         nprocessed+=1
-        if nprocessed>current*tick*total:
-            print 'now %d%% of training set have been processed'%(current*tick*100)
-            current+=1
+        if nprocessed%100==0:
+            print 'now %d lines of training set have been processed'%(nprocessed)
+          
         seq=[]
         tseq=[]
-        wseq=[]
         lastspace=True
         for i in range(len(line)):
             if not isSpace(line[i]):
-                seq.append(wordmap[line[i]])
+                if wordmap.has_key(line[i]):
+                    seq.append(wordmap[line[i]])
+                else:
+                    seq.append(unknown_id)
                 if(lastspace):
                     if(i==len(line)-1 or line[i+1]==' '):
                         tseq.append(0) #S
@@ -66,41 +53,38 @@ def getTrainSeqs(train_file):
                 lastspace=False
             else:
                 lastspace=True
-        seqs.append(seq)
-        tseqs.append(tseq)
 
-    return (wordmap,seqs,tseqs)
+        if seq:
+            yield (seq,tseq)
 
-def createHmm(wordmap,seqs,tseqs):
+
+def createHmm(wordmap,pairs):
     '''create hmm '''
 
     print createHmm.__doc__
 
-    observations=[]
-    states=[]
-    for seq in seqs:
-        observations.extend(seq)
-    for tseq in tseqs:
-        states.extend(tseq)
-
     nstates=4
-    nobservations=6000 #len(wordmap)+1
+    nobservations=len(wordmap)+200
 
-    Pi=[0.5,0.5,0,0]
+    Pi=[0]*nstates
     A=[[0.0]*nstates for j in range(nstates)] #tranlate propobility matrix
     B=[[1.0]*nobservations for j in range(nstates)] #observation distribution matrix
-
     C=[0.0]*nstates  #count of each state
-    C[states[0]]=1 
 
-    
-    for i in range(1,len(states)):
-        s1=states[i-1]
-        s2=states[i]
-        A[s1][s2]+=1
-        C[s2]+=1
-        B[s2][int(observations[i])]+=1
+    nseqs=0
+    for (seq,tseq) in pairs:
+        Pi[tseq[0]]+=1
+        nseqs+=1
+        C[tseq[0]]+=1 
+        for i in range(1,len(tseq)):
+            s1=tseq[i-1]
+            s2=tseq[i]
+            A[s1][s2]+=1
+            C[s2]+=1
+            B[s2][int(seq[i])]+=1
 
+    Pi=[i/float(nseqs) for i in Pi]
+  
     for i in range(nstates):
         for j in range(nstates):
             A[i][j]=A[i][j]/C[i]
@@ -110,29 +94,6 @@ def createHmm(wordmap,seqs,tseqs):
 
     return (nstates,nobservations,A,B,Pi)
 
-def saveTrainSeqs(wordmap,dict_file,seqs,id_seq_file,tseqs,tag_seq_file):
-    '''save wordmap,seqs,tseqs,wseqs to file'''
-   
-    if dict_file:
-        print 'write word dict to file...'
-        import operator
-        words=[unicode(k+' '+str(v)) for (k,v) in sorted(wordmap.iteritems(), key=operator.itemgetter(1))]
-        dict_file.write('\r\n'.join(words).encode('utf8'))
-        dict_file.close()
-
-    if id_seq_file:
-        print 'write integer id sequences to file...'
-        seqs=[[str(id) for id in seq] for seq in seqs]
-        seqs=[' '.join(seq) for seq in seqs]
-        id_seq_file.write('\r\n'.join(seqs))
-        id_seq_file.close()
-
-    if tag_seq_file:
-        print 'write integer tag sequence to file...'
-        tseqs=[[str(tag) for tag in tseq] for tseq in tseqs]
-        tseqs=[' '.join(tseq) for tseq in tseqs]
-        tag_seq_file.write('\r\n'.join(tseqs))
-        tag_seq_file.close()
 
 def saveHmm(hmm_file,hmm):
     '''save hmm to file'''
@@ -154,50 +115,36 @@ def saveHmm(hmm_file,hmm):
 def train(train_file_name='msr_training.utf8',hmm_file_name='model.hmm',dict_file_name='dict.txt'):
     train_file=file(train_file_name)
     hmm_file=file(hmm_file_name,'w')
-    dict_file=file(dict_file_name,'w')
+    dict_file=file(dict_file_name)
+    wordmap=getWordMap(dict_file)
 
-    (wordmap,seqs,tseqs)=getTrainSeqs(train_file)
-    hmm=createHmm(wordmap,seqs,tseqs)
+    pairs=getTrainSeqs(train_file,wordmap)
+    hmm=createHmm(wordmap,pairs)
     saveHmm(hmm_file,hmm)
-    saveTrainSeqs(wordmap,dict_file,None,None,None,None)
 
 def getTestSeqs(dict_file,test_file):
     '''convert test set to [integer observation sequence] and [word sequence]
     '''
     print getTestSeqs.__doc__
 
-    tmp=[l.decode('utf8').strip().split()for l in dict_file]
-    tmp=[(l[0],int(l[1])) for l in tmp]
-    wordmap=dict(tmp)
+    wordmap=getWordMap(dict_file)
 
     unknown_id=len(wordmap)
 
-    lines=[line.decode('utf8').strip() for line in test_file]
-    tick=0.05
-    current=0
-    total=len(lines)
     nprocessed=0
-
-    print 'test set have %d lines'%len(lines)
     print 'begin to get observation sequence from test set...'
-    seqs=[]
-    wseqs=[]
-    for line in lines:
-        nprocessed+=1
-        if nprocessed>current*tick*total:
-            print 'now %d%% have been processed'%(current*tick*100)
-            current+=1
 
+    for line in test_file:
+        line=line.decode('utf8').strip() 
+            
         seq=[]
         wseq=[]
-        for w in removeSpace(line):
+        for w in l_space_pattern.sub(',',line):
             wseq.append(w)
             seq.append(wordmap[w] if wordmap.has_key(w) else unknown_id)
         if seq:
-            seqs.append(seq)
-            wseqs.append(wseq)
-    
-    return (seqs,wseqs)
+            yield (seq,wseq)
+
 
 from math import log
 
@@ -222,7 +169,7 @@ def viterbi(A,B,Pi,O):
     for j in range(N):
         if Pi[j]!=0 and B[j][O[0]]!=0:
             delta[j]=log(Pi[j])+log(B[j][O[0]])
-
+    
     psy=[[0]*N for t in range(T)]
     states=[0]*T
 
@@ -243,7 +190,8 @@ def viterbi(A,B,Pi,O):
         states[t]=psy[t+1][states[t+1]]
 
     return states
-
+class FileFormatException(Exception):
+    pass
 
 def parseHmm(hmm_file):
     lines=[l.decode('utf8').strip() for l in hmm_file]
@@ -331,50 +279,41 @@ def parseHmm(hmm_file):
 
     return (nstates,nobservations,A,B,Pi)
 
-def getStateSeqs(hmm,o_seqs):
+def getStateSeqs(hmm,seq_wseq_pairs):
     '''create state sequence  from observation sequence with hmm'''
    
     print getStateSeqs.__doc__
 
     (_,_,A,B,Pi)=hmm
-    
-    tick=0.05
-    current=0
-    total=len(o_seqs)
-    nprocessed=0
 
-    print 'begin to get state sequence of test set...total:%d'%total
-    s_seqs=[]
-    for o_seq in o_seqs:
-        nprocessed+=1
-        if nprocessed>current*tick*total:
-            print 'now %d%% have been processed'%(current*tick*100)
-            current+=1
+    print 'begin to get state sequence of test set...'
+    for (o_seq,w_seq) in seq_wseq_pairs:
         s_seq=viterbi(A,B,Pi,o_seq)
-        s_seqs.append(s_seq)
+        yield (s_seq,w_seq)
 
-    return s_seqs
-
-def saveResult(result_file,tseqs,wseqs):
+def saveResult(result_file,tseq_wseq_pairs):
     '''save result into file from tag sequences and word sequence '''
 
     print saveResult.__doc__
 
     seg_lines=[]
-    for i in range(len(tseqs)):
-        tseq=tseqs[i]
-        wseq=wseqs[i]
+    nprocessed=0
+    for (tseq,wseq) in tseq_wseq_pairs:
         seg_line=[]
+        if nprocessed%100==0:
+            print 'now %d lines have been processed'%nprocessed
+        nprocessed+=1
+        
         for j in range(len(tseq)):
             if tseq[j]==0 or tseq[j]==2:
                 seg_line.append(wseq[j]+' ')
             else:
                 seg_line.append(wseq[j])
+        line=''.join(seg_line)+'\r\n'
+        result_file.write(line.encode('utf8'))
 
-        seg_lines.append(''.join(seg_line))
-
-    result_file.write('\r\n'.join(seg_lines).encode('utf8'))
     result_file.close()
+    
 
 def segment(dict_file_name='dict.txt',hmm_file_name='model.hmm',test_file_name='msr_test.utf8',result_file_name='test_result.utf8'):
 
@@ -384,10 +323,10 @@ def segment(dict_file_name='dict.txt',hmm_file_name='model.hmm',test_file_name='
 
     hmm=parseHmm(file(hmm_file_name))
 
-    (o_seqs,wseqs)=getTestSeqs(dict_file,test_file)
-    s_seqs=getStateSeqs(hmm,o_seqs)
+    seq_wseq_pairs=getTestSeqs(dict_file,test_file)
+    tseq_wseq_pairs=getStateSeqs(hmm,seq_wseq_pairs)
 
-    saveResult(result_file,s_seqs,wseqs)
+    saveResult(result_file,tseq_wseq_pairs)
 
 def usage():
     print '''usage:
